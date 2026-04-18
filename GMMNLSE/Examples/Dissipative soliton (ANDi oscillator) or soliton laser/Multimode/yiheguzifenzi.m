@@ -1,0 +1,800 @@
+% 单腔异核双频孤子分子
+clear ;close all; clearvars; 
+
+addpath('C:\Users\LIZE\Desktop\MMTools-main111\GMMNLSE');
+addpath('C:\Users\LIZE\Desktop\MMTools-main111\GMMNLSE\user_helpers\');
+sim.cuda_dir_path = 'C:\Users\LIZE\Desktop\MMTools-main111\GMMNLSE\cuda';
+%% Gain info
+% gain_rate_eqn.gain_medium = 'Er'; % 指定增益介质
+% gain_rate_eqn.base_medium = 'silica'; % 指定基本介质
+% gain_rate_eqn.reuse_data = true; % 对于环形或线性空腔，脉冲最终会进入稳定状态。
+%                                   % 如果重复使用上一次往返的泵和 ASE 数据，收敛速度会更快，特别是在反回泵时。
+% gain_rate_eqn.linear_oscillator = false; % 对于线性振荡器来说，两个方向的脉冲会同时出现，从而耗尽增益；
+%                                          % 因此，需要考虑后向传播脉冲。
+% gain_rate_eqn.core_diameter = 8; % um 纤芯直径
+% gain_rate_eqn.cladding_diameter = gain_rate_eqn.core_diameter; % um 包层直径
+% gain_rate_eqn.core_NA = 0.13;  % 数值孔径
+% gain_rate_eqn.absorption_wavelength_to_get_N_total = 1530; % nm
+% gain_rate_eqn.absorption_to_get_N_total = 80; % dB/m
+% gain_rate_eqn.pump_wavelength = 976; % nm 泵浦波长
+% gain_rate_eqn.copump_power = 1; % W 泵浦功率
+% gain_rate_eqn.counterpump_power = 0; % W
+% gain_rate_eqn.downsampling_factor = 2; % 一个整数；对特征模态（eigenmode）分布进行下采样以提高运行速度。
+% gain_rate_eqn.ignore_ASE = true;
+% gain_rate_eqn.sponASE_spatial_modes = []; % 在 LMA 光纤中，由于信号场的 ASE 模式数可能大于 1，因此使用该系数来正确考虑 ASE。 如果是 [] 这样的空值，则为 length(sim.midx)。
+% gain_rate_eqn.max_iterations = 0; % 对于反回泵或考虑 ASE，需要进行迭代。
+% gain_rate_eqn.tol = 1e-3; % 迭代的宽容度
+% gain_rate_eqn.verbose = true; % 在计算增益的迭代过程中显示信息（最终脉冲能量）
+
+%% 设置光纤参数
+% 一般参数
+c = 299792458; % m/s
+lambda1 = 1528e-9; 
+lambda2 = 1559e-9;
+sim.lambda0 = (lambda1+lambda2)/2; % m; 中心波长
+sim.scalar = false;
+sim.f0 = 2.99792458e-4/sim.lambda0; % THz; 中心频率
+% sim.adaptive_dz.threshold = 1e-6;
+% sim.progress_bar = false; % 进度条
+sim.gpu_yes = true; % 是否使用 GPU
+sim.include_Raman = true;
+sim.pulse_centering = false;
+sim_1 = sim; % 无源光纤
+sim_1.progress_bar_name = 'PMF (10.1um)';
+sim_1.save_period = 0.1; % m 每隔多少距离保存一次完整的光场数据
+sim_1.midx = [1, 2];  % 两个"伪空间模式"（实际是两个波长）
+sim_2 = sim_1; % 无源光纤
+sim_2.save_period = 0.001; % m 每隔多少距离保存一次完整的光场数据
+fiber_1.MFD = 10.1;
+[fiber_1,sim_1] = load_default_GMMNLSE_propagate(fiber_1,sim_1,'single_mode'); % 无源光纤
+[fiber_1,sim_2] = load_default_GMMNLSE_propagate(fiber_1,sim_2,'single_mode'); % 无源光纤
+beat_length = 2.7e-3; % 2.7 mm
+delta_n = sim.lambda0 / beat_length;% 双折射值
+Delta_beta = 2*pi*delta_n / sim.lambda0; % 双折射项
+beta2_PMF = -0.02295; % ps^2/m (色散值)
+beta3_PMF = 1.3e-4; % ps^3/m
+beta1_ref = 4.8754e3; % ps/m (基准群慢度，约等于n/c)
+beta0_ref = 5.8126e6; % 1/m (基准波数)
+omega1 = 2*pi*c/lambda1; % rad/s
+omega2 = 2*pi*c/lambda2; % rad/s
+omega_ps =(omega2 - omega1) * 1e-12;
+n_eff =  beta1_ref* c * 1e-12;% 有效折射率
+Delta_0 = 2*pi*n_eff*(1/lambda2-1/lambda1); % 波长差异引起的 k0 差异
+Delta_PMF = beta2_PMF * omega_ps + 0.5 * beta3_PMF * omega_ps^2; 
+% betas: 每列对应一个"伪模式"
+fiber_1.betas = [
+    beta0_ref,  beta0_ref+Delta_0;
+    beta1_ref,  beta1_ref+Delta_PMF;
+    beta2_PMF,  beta2_PMF;
+    beta3_PMF,  beta3_PMF]; % ps^k/km
+SR_val_1 = fiber_1.SR(1);
+fiber_1.SR = zeros(2, 2, 2, 2); 
+% SPM
+fiber_1.SR(1, 1, 1, 1) = 1 * SR_val_1;
+fiber_1.SR(2, 2, 2, 2) = 1 * SR_val_1;
+% XPM 
+fiber_1.SR(1, 2, 1, 2) = 2 * SR_val_1; fiber_1.SR(1, 2, 2, 1) = 2 * SR_val_1; 
+fiber_1.SR(2, 1, 2, 1) = 2 * SR_val_1; fiber_1.SR(2, 1, 1, 2) = 2 * SR_val_1; 
+sim_1.Delta_beta_0 = Delta_beta;
+sim_2.Delta_beta_0 = Delta_beta;
+% -------------------------------------------------------------------------
+% PMF、EDF、DCF
+fiber_1.L0 = 0.4; % m
+
+fiber_2 = fiber_1;fiber_2.L0 = 2*0.067;% m
+
+fiber_3 = fiber_1;fiber_3.L0 = 0.6;
+
+fiber_4 = fiber_1;fiber_4.L0 = 2;
+
+fiber_5 = fiber_1;fiber_5.L0 = 1;
+
+fiber_6 = fiber_1;fiber_6.L0 = 0.7;
+
+fiber_DCF.L0 = 1.75;
+sim_DCF = sim; % 无源光纤
+sim_DCF.progress_bar_name = 'DCF (4um)';
+sim_DCF.save_period = 0.05; % m 每隔多少距离保存一次完整的光场数据
+sim_DCF.midx = [1, 2];  % 两个"伪空间模式"（实际是两个波长）
+fiber_DCF.MFD = 4;
+[fiber_DCF,sim_DCF] = load_default_GMMNLSE_propagate(fiber_DCF,sim_DCF,'single_mode'); % 无源光纤
+beta2_DCF = 0.0765;
+beta3_DCF = -2.8e-4; % ps^3/m
+Delta_DCF = beta2_DCF * omega_ps + 0.5 * beta3_DCF * omega_ps^2; 
+fiber_DCF.betas = [
+    beta0_ref,  beta0_ref+Delta_0;
+    beta1_ref,  beta1_ref+Delta_DCF;
+    beta2_DCF,  beta2_DCF;
+    beta3_DCF,  beta3_DCF];
+SR_val_DCF = fiber_DCF.SR(1);
+fiber_DCF.SR = zeros(2, 2, 2, 2); 
+% SPM
+fiber_DCF.SR(1, 1, 1, 1) = 1 * SR_val_DCF;
+fiber_DCF.SR(2, 2, 2, 2) = 1 * SR_val_DCF;
+% XPM 
+fiber_DCF.SR(1, 2, 1, 2) = 2 * SR_val_DCF; fiber_DCF.SR(1, 2, 2, 1) = 2 * SR_val_DCF; 
+fiber_DCF.SR(2, 1, 2, 1) = 2 * SR_val_DCF; fiber_DCF.SR(2, 1, 1, 2) = 2 * SR_val_DCF; 
+sim_DCF.Delta_beta_0 = Delta_beta;
+
+% 增益光纤
+sim_Gain = sim;
+sim_Gain.lambda0 = (lambda1+lambda2)/2;  
+sim_Gain.f0 = 2.99792458e-4 / sim_Gain.lambda0;  % THz
+sim_Gain.gain_model = 1; % 2使用速率-增益模型
+sim_Gain.progress_bar_name = 'Gain (8um)';
+sim_Gain.save_period = 0.02; % m 每隔多少距离保存一次完整的光场数据
+sim_Gain.midx = [1, 2]; % 两个"伪空间模式"（实际是两个波长）
+fiber_Gain.L0 = 0.62; % m
+fiber_Gain.MFD = 9;
+total_gain_dB = 8; 
+fiber_Gain.dB_gain = total_gain_dB / fiber_Gain.L0; % dB/m
+[fiber_Gain,sim_Gain] = load_default_GMMNLSE_propagate(fiber_Gain,sim_Gain,'single_mode'); % 对于增益光纤
+g_per_meter = fiber_Gain.dB_gain * log(10)/10; % 小信号增益
+tilt_factor = 1;
+fiber_Gain.gain_coeff = [0, g_per_meter, 0, g_per_meter * tilt_factor];
+fiber_Gain.saturation_energy = 0.1;  % 饱和能量 nJ 
+fiber_Gain.saturation_intensity = fiber_Gain.saturation_energy* 1e-9 / fiber_Gain.gain_Aeff;
+fiber_Gain.gain_fwhm = 40e-9;
+beta2_Gain = -0.02039;
+beta3_Gain = 1.3e-4;% ps^3/m
+Delta_Gain = beta2_Gain * omega_ps + 0.5 * beta3_Gain * omega_ps^2; 
+fiber_Gain.betas = [
+    beta0_ref,  beta0_ref+Delta_0;
+    beta1_ref,  beta1_ref+Delta_Gain;
+    beta2_Gain,  beta2_Gain;
+    beta3_Gain,  beta3_Gain];
+SR_val_Gain = fiber_Gain.SR(1); 
+fiber_Gain.SR = zeros(2, 2, 2, 2); 
+% SPM
+fiber_Gain.SR(1, 1, 1, 1) = 1 * SR_val_Gain;
+fiber_Gain.SR(2, 2, 2, 2) = 1 * SR_val_Gain;
+% XPM
+fiber_Gain.SR(1, 2, 1, 2) = 2 * SR_val_Gain; fiber_Gain.SR(1, 2, 2, 1) = 2 * SR_val_Gain;
+fiber_Gain.SR(2, 1, 2, 1) = 2 * SR_val_Gain; fiber_Gain.SR(2, 1, 1, 2) = 2 * SR_val_Gain; 
+sim_Gain.Delta_beta_0 = Delta_beta;
+
+Ps_length = 0.1; % m
+FS_length = 0.1; % m
+
+fiber_cavity = [fiber_1 fiber_2 fiber_3 fiber_4 fiber_5 fiber_6 fiber_DCF fiber_Gain];
+sim_cavity = [sim_1 sim_2 sim_1 sim_1 sim_1 sim_1 sim_DCF sim_Gain];
+
+%% 设置一般空腔参数
+max_rt = 200; % 最大往返次数
+Nt = 2^11; % 点数
+time_window = 120; % ps
+dt = time_window/Nt;
+f = sim.f0+(-Nt/2:Nt/2-1)'/(Nt*dt); % THz
+t = (-Nt/2:Nt/2-1)'*dt; % ps
+lambda = c./(f*1e12)*1e9; % nm
+OC = 0.3; % 输出耦合
+tol_convergence = 1e-3; % 输出脉冲能量收敛的容差
+
+%% 设置初始条件
+tfwhm = 2; % ps
+t_offset = 10; % ps
+total_energy = 0.3; % nJ - 根据实际情况调整
+
+% 计算频移
+delta_f_1528 = (c/lambda1 - c/sim.lambda0)*1e-12; % THz
+delta_f_1557 = (c/lambda2 - c/sim.lambda0)*1e-12; % THz
+
+
+% -------- 创建 λ₁ 脉冲 --------
+pulse1_1528 = build_MMgaussian(tfwhm, time_window, total_energy/2, 1, Nt, ...
+    {'ifft', delta_f_1528}, ... % 频移
+    1, ...
+    -t_offset, ...
+    1);
+
+% -------- 创建 λ₂ 脉冲 --------
+pulse2_1557 = build_MMgaussian(tfwhm, time_window, total_energy/2, 1, Nt, ...
+    {'ifft', delta_f_1557}, ...
+    1, ...
+    t_offset, ...
+    1);
+
+% -------- 组合为 4 分量输入 --------
+input_pulse.dt = dt;
+input_pulse.fields = [
+     zeros(Nt, 1), ... % λ₁ˣ
+    pulse1_1528.fields, ... % λ₁ʸ
+     zeros(Nt, 1), ... % λ₂ˣ
+    pulse2_1557.fields  ... % λ₂ʸ
+];
+
+% % ==================== 验证初始脉冲频谱 ====================
+% figure('Name', 'Initial 4-Component Gaussian Pulses');
+% component_labels = {'λ₁ˣ', 'λ₁ʸ', 'λ₂ˣ', 'λ₂ʸ'};
+% for i = 1:4
+%     subplot(2, 2, i);
+% 
+%     % 时域
+%     yyaxis left
+%     plot(t, abs(input_pulse.fields(:,i)).^2, 'b-', 'LineWidth', 1.5);
+%     ylabel('Power (W)');
+%     xlabel('Time (ps)');
+%     xlim([-10, 10]); % 只显示脉冲附近
+% 
+%     % 频域
+%     yyaxis right
+%     E_fft = fftshift(fft(ifftshift(input_pulse.fields(:,i))));
+%     spec = abs(E_fft).^2;
+%     spec_norm = spec / max(spec);
+%     plot(lambda, spec_norm, 'r-', 'LineWidth', 1.5);
+%     ylabel('Normalized Spectrum');
+%     xlim([1520, 1570]);
+% 
+%     % 标注峰值波长
+%     [~, idx_peak] = max(spec);
+%     peak_lambda = lambda(idx_peak);
+% 
+%     title(sprintf('%s (%.2f nm)', component_labels{i}, peak_lambda));
+%     legend('Time', 'Spectrum', 'Location', 'best');
+%     grid on;
+% end
+% 
+% sgtitle(sprintf('Initial Gaussian Pulses (Total Energy: %.2f nJ)', total_energy));
+
+% tfwhm = 2; % ps
+% t_offset = 10;% ps
+% Aeff = 1/fiber_1.SR(1,1,1,1); 
+% 
+% delta_f_1528 = (c/lambda1 - c/sim.lambda0)*1e-12; % λ1的shift
+% delta_f_1559 = (c/lambda2 - c/sim.lambda0)*1e-12; % λ2的shift
+% 
+% % -------- 第一个波长（λ1=1528 nm） --------
+% pulse1_1528_x = build_MMsoliton(tfwhm, fiber_1.betas(3,1), 1/Aeff, sim.lambda0, time_window, 1, Nt, {'ifft',delta_f_1528}, 1 ,-t_offset);
+% % 第二偏振分量
+% pulse1_1528_y = pulse1_1528_x;
+% % pulse1_1528_y.fields = pulse1_1528_y.fields * exp(1j*pi/4);
+% 
+% % -------- 第二个波长（λ2=1559 nm） --------
+% pulse2_1559_x = build_MMsoliton(tfwhm, fiber_1.betas(3,2), 1/Aeff, sim.lambda0, time_window, 1, Nt, {'ifft',delta_f_1559}, 1 ,t_offset);
+% % 第二偏振分量
+% pulse2_1559_y = pulse2_1559_x;
+% % pulse2_1559_y.fields = pulse2_1559_y.fields * exp(1j*pi/4);
+% 
+% input_pulse = pulse1_1528_x;
+% input_pulse.fields = [ zeros(Nt, 1), 0.3*pulse1_1528_y.fields, zeros(Nt, 1), 0.3*pulse2_1559_y.fields];
+% % ==================== 验证初始脉冲频谱 ====================
+% figure('Name', 'FFT Verify: Initial Pulses at t=0');
+% 
+% E_x1 = pulse1_1528_x.fields;
+% E_y1 = pulse1_1528_y.fields;
+% E_x2 = pulse2_1559_x.fields;
+% E_y2 = pulse2_1559_y.fields;
+% 
+% components = {E_x1, E_y1, E_x2, E_y2};
+% labels = {'λ₁ˣ', 'λ₁ʸ', 'λ₂ˣ', 'λ₂ʸ'};
+% 
+% for ii = 1:4
+%     E_test = components{ii};
+% 
+%     % FFT获取频谱
+%     E_fft = fftshift(fft(ifftshift(E_test)));
+%     spec = abs(E_fft).^2;
+%     spec = spec / max(spec); % 归一化到最大值为1
+% 
+%     % 找峰值
+%     [~, idx_peak] = max(spec);
+%     peak_lambda = lambda(idx_peak);
+% 
+%     % 绘图
+%     subplot(2, 2, ii);
+%     plot(lambda, spec, 'b-', 'LineWidth', 1.5);
+%     xlim([1525, 1565]);
+%     xlabel('λ (nm)');
+%     ylabel('Normalized |E|²');
+%     hold on;
+%     plot(peak_lambda, 1, 'r*', 'MarkerSize', 15);
+%     grid on;
+% 
+%     title(sprintf('%s: Peak @ %.2f nm', labels{ii}, peak_lambda));
+% end
+% sgtitle('Verification: Initial Pulses Spectrum');
+% 
+% % 检查两波长是否足够相干
+% coherence_lambda12 = abs(trapz(E_y1.*conj(E_x1))*dt).^2 / ...
+%     (trapz(abs(E_y1).^2)*dt * trapz(abs(E_x1).^2)*dt);
+% fprintf('λ₁-λ₂ 相干性: %.3f\n', coherence_lambda12);
+
+%% 已保存的光场信息
+L0 = fiber_1.L0*2+fiber_2.L0+fiber_3.L0+fiber_4.L0+fiber_5.L0+fiber_6.L0+fiber_Gain.L0+fiber_DCF.L0; % 光纤总长度
+D = (fiber_1.L0*2+fiber_2.L0+fiber_3.L0+fiber_4.L0+fiber_5.L0+fiber_6.L0)*(-0.02295)+fiber_Gain.L0*(-0.02039)+fiber_DCF.L0*0.0765;
+fprintf('总色散: %.6f\n', D);
+% 初始化保存数组
+field = cell(1,max_rt);  % 线性臂传播
+saved_z = cell(1,max_rt);
+
+field_CW = cell(1,max_rt);      % CW传播
+saved_CW = cell(1,max_rt);
+
+field_CCW = cell(1,max_rt);     % CCW传播
+saved_CCW = cell(1,max_rt);
+
+for i = 1:max_rt
+    saved_z{i} = [];
+    saved_CW{i} = [];
+    saved_CCW{i} = [];
+end
+
+splice_z = cumsum([fiber_1.L0, FS_length, fiber_2.L0, FS_length]);% 接合点的位置
+splice_z1 = cumsum([fiber_3.L0, fiber_Gain.L0, fiber_4.L0, Ps_length, fiber_5.L0, fiber_DCF.L0, fiber_6.L0]);
+splice_z2 = cumsum([fiber_6.L0, fiber_DCF.L0, fiber_5.L0, Ps_length, fiber_4.L0, fiber_Gain.L0, fiber_3.L0]);
+output_field = zeros(Nt,1,max_rt); % 输出脉冲
+max_save_per_fiber = 30;
+
+%% 加载增益参数
+f1_THz = c / lambda1 / 1e12; % 1528 nm 对应的频率 (THz)
+f2_THz = c / lambda2 / 1e12; % 1559 nm 对应的频率 (THz)
+BW_THz = 1.4; % 滤波器半宽
+
+% 构造双峰超高斯滤波器曲线 (6阶，边缘平滑且陡峭)
+% T_filter = exp(-0.5 * ((f - f1_THz) / BW_THz).^6) + ...
+%     exp(-0.5 * ((f - f2_THz) / BW_THz).^6);
+% T_filter = min(T_filter, 1); % 确保最大透过率不超过 1
+% T_filter_ifft = ifftshift(T_filter);
+
+T_filter = exp(-0.5 * ((f - f1_THz) / BW_THz).^2) + ...
+    exp(-0.5 * ((f - f2_THz) / BW_THz).^2);
+T_filter = min(T_filter, 1);
+T_filter_fft = ifftshift(T_filter); 
+% L_air = 0.08; % m 1 是自由空间长度
+% c = 299792458; % m/s
+% v = 1/fiber_cavity(1).betas(2)*1e12; % 在光纤中传播的速度
+% 
+% t_rep = L0/v + L_air/c; % s; 完成一次往返所需的时间（脉冲的反重复率）
+%                         % 该增益模型求解的是稳态条件下光纤的增益；因此，与掺杂离子的寿命相比，重复率必须很高。
+% gain_rate_eqn.t_rep = t_rep;
+% 
+% gain_rate_eqn = gain_info( fiber_Gain,sim_Gain,gain_rate_eqn,ifftshift(lambda,1) );
+
+%% 运行空腔模拟
+func = analyze_sim; % 若干分析功能的容器
+% 初始化一些参数
+output_energy = zeros(max_rt,1);
+rt_num = 0;
+pulse_survives = true;
+fprintf('总场数 %d\n', length(sim_Gain.midx)*(2 - sim_Gain.scalar));% 将双波长当作"伪多模"处理
+fprintf('波长数: %d\n', size(fiber_Gain.betas, 2));
+fprintf('偏振数: %d\n', 2 - sim_Gain.scalar);
+while rt_num < max_rt
+    time_delay = 0;
+    current_z = 0;
+    current_z_CW = 0;
+    current_z_CCW = 0;
+    rt_num = rt_num + 1;
+
+    t_iteration_start = tic;
+    cprintf('*[1 0.5 0.31]','Iteration %d', rt_num);
+
+    % -----------------------------------------------------------------
+    % PMF 40cm
+    prop_output = GMMNLSE_propagate(fiber_cavity(1), input_pulse, sim_cavity(1));
+    time_delay = time_delay + prop_output.t_delay(end);
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output.fields,max_save_per_fiber,current_z,prop_output.z);
+    field{rt_num} = cat(3, field{rt_num}, saved_field);
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, saved_z_this_fiber');
+    current_z = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % 45°熔接
+    theta = pi/4;
+    R = [cos(theta), sin(theta);
+        -sin(theta), cos(theta)];
+    R2 = blkdiag(R, R);
+    % 应用旋转到当前输出光场
+    E_in = prop_output.fields(:,:,end);   % [Nt × 4]
+    E_rot = (R2 * E_in.').';              % 应用旋转（每行是一个时间点的四维向量）
+    prop_output.fields(:,:,end) = E_rot;
+
+    field{rt_num} = cat(3, field{rt_num}, prop_output.fields(:,:,end));
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, current_z); 
+    % 瞬时器件正确连接
+    field{rt_num} = cat(3, field{rt_num}, prop_output.fields(:,:,end));
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, current_z + FS_length);
+    current_z = current_z + FS_length;
+
+    % -----------------------------------------------------------------
+    % PMF 28cm*2
+    prop_output = GMMNLSE_propagate(fiber_cavity(2), prop_output, sim_cavity(2));
+    time_delay = time_delay + prop_output.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output.fields,max_save_per_fiber,current_z,prop_output.z);
+    field{rt_num} = cat(3, field{rt_num}, saved_field);
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, saved_z_this_fiber');
+    current_z = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % 45°熔接
+    theta = -pi/4; 
+    R = [cos(theta), sin(theta);
+        -sin(theta), cos(theta)];
+    R2 = blkdiag(R, R);
+    % 应用旋转到当前输出光场
+    E_in = prop_output.fields(:,:,end);   % [Nt × 4]
+    E_rot = (R2 * E_in.').';              % 应用旋转（每行是一个时间点的四维向量）
+    prop_output.fields(:,:,end) = E_rot;
+
+    field{rt_num} = cat(3, field{rt_num}, prop_output.fields(:,:,end));
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, current_z); 
+
+    % 瞬时器件正确连接
+    field{rt_num} = cat(3, field{rt_num}, prop_output.fields(:,:,end));
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, current_z + FS_length);
+    current_z = current_z + FS_length;
+
+    % -----------------------------------------------------------------
+    % PMF 40cm
+    prop_output = GMMNLSE_propagate(fiber_cavity(1), prop_output, sim_cavity(1));
+    time_delay = time_delay + prop_output.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output.fields,max_save_per_fiber,current_z,prop_output.z);
+    field{rt_num} = cat(3, field{rt_num}, saved_field);
+    saved_z{rt_num} = cat(2, saved_z{rt_num}, saved_z_this_fiber');
+    current_z = saved_z_this_fiber(end);
+
+    % 滤波器
+    fields_last = prop_output.fields(:,:,end);
+    E_f = fft(fields_last, [], 1);
+    E_f_filtered = E_f .* T_filter_fft;
+    prop_output.fields(:,:,end) = ifft(E_f_filtered, [], 1);
+
+    % -----------------------------------------------------------------
+    % 2x2耦合器 快轴堵塞 (第一次分束：线性臂 -> 环形腔)
+    E_in = squeeze(prop_output.fields(:,:,end));  % (Nt, 4): [λ₁ˣ, λ₁ʸ, λ₂ˣ, λ₂ʸ]
+    % 耦合器系数
+    r1 = sqrt(1-OC);  % 70% CW
+    r2 = 1j*sqrt(OC); % 30% CCW
+    % CW快轴堵塞：只有 y 偏振（第2和第4分量）能进入环形腔
+    prop_output_CW.fields = [zeros(Nt, 1),r1 * E_in(:, 2),...
+                             zeros(Nt, 1),r1 * E_in(:, 4)];  % (Nt, 2): [0 ,λ₁ʸ,0 ,λ₂ʸ]
+    prop_output_CW.dt = dt;
+    % CCW快轴堵塞：只有 y 偏振（第2和第4分量）能进入环形腔
+    prop_output_CCW.fields = [zeros(Nt, 1),r2 * E_in(:, 2),...
+                              zeros(Nt, 1),r2 * E_in(:, 4)];  % (Nt, 2): [0 ,λ₁ʸ,0 ,λ₂ʸ]
+    prop_output_CCW.dt = dt;
+   
+    %% -----------------------------------------------------------------
+    % CW
+    % -----------------------------------------------------------------
+    % PMF 33cm
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(3), prop_output_CW, sim_cavity(3));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % EDF 62cm
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(8), prop_output_CW, sim_cavity(8));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+
+    % E_f_CW = fft(prop_output_CW.fields(:,:,end), [], 1);
+    % E_f_filtered_CW = E_f_CW .* T_filter_ifft;
+    % prop_output_CW.fields(:,:,end) = ifft(E_f_filtered_CW, [], 1);
+
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % PMF 55+153cm
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(4), prop_output_CW, sim_cavity(4));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % 相移器
+    beta_PS = pi/2;
+    prop_output_CW.fields = prop_output_CW.fields(:,:,end)*exp(1j*beta_PS);
+
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, prop_output_CW.fields);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, current_z_CW); 
+
+    % 瞬时器件正确连接
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, prop_output_CW.fields);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, current_z_CW + Ps_length);
+    current_z_CW = current_z_CW + Ps_length;
+
+    % -----------------------------------------------------------------
+    % PMF 100cm
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(5), prop_output_CW, sim_cavity(5));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % DCF 
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(7), prop_output_CW, sim_cavity(7));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+   
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % PMF 69cm
+    prop_output_CW = GMMNLSE_propagate(fiber_cavity(6), prop_output_CW, sim_cavity(6));
+    time_delay = time_delay + prop_output_CW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CW.fields,max_save_per_fiber,current_z_CW,prop_output_CW.z);
+    field_CW{rt_num} = cat(3, field_CW{rt_num}, saved_field);
+    saved_CW{rt_num} = cat(2, saved_CW{rt_num}, saved_z_this_fiber');
+    current_z_CW = saved_z_this_fiber(end);
+
+    %% -----------------------------------------------------------------
+    % CCW
+    % -----------------------------------------------------------------
+    % PMF 69cm
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(6), prop_output_CCW, sim_cavity(6));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % DCF 
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(7), prop_output_CCW, sim_cavity(7));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+   
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % PMF 100cm
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(5), prop_output_CCW, sim_cavity(5));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % 相移器
+    beta_PS = 0;
+    prop_output_CCW.fields = prop_output_CCW.fields(:,:,end)*exp(1j*beta_PS);
+
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, prop_output_CCW.fields);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, current_z_CCW); 
+
+    % 瞬时器件正确连接
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, prop_output_CCW.fields);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, current_z_CCW + Ps_length);
+    current_z_CCW = current_z_CCW + Ps_length;
+
+    % -----------------------------------------------------------------
+    % PMF 55+153cm
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(4), prop_output_CCW, sim_cavity(4));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % EDF 62cm
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(8), prop_output_CCW, sim_cavity(8));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+   
+    % E_f_CCW = fft(prop_output_CCW.fields(:,:,end), [], 1);
+    % E_f_filtered_CCW = E_f_CCW .* T_filter_ifft;
+    % prop_output_CCW.fields(:,:,end) = ifft(E_f_filtered_CCW, [], 1);
+
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+
+    % -----------------------------------------------------------------
+    % PMF 38cm
+    prop_output_CCW = GMMNLSE_propagate(fiber_cavity(3), prop_output_CCW, sim_cavity(3));
+    time_delay = time_delay + prop_output_CCW.t_delay(end);
+    
+    [saved_field,saved_z_this_fiber] = func.extract_saved_field(prop_output_CCW.fields,max_save_per_fiber,current_z_CCW,prop_output_CCW.z);
+    field_CCW{rt_num} = cat(3, field_CCW{rt_num}, saved_field);
+    saved_CCW{rt_num} = cat(2, saved_CCW{rt_num}, saved_z_this_fiber');
+    current_z_CCW = saved_z_this_fiber(end);
+   
+    % -----------------------------------------------------------------
+    % 输入光场  E_A: CW环输出, E_B: CCW环输出  E_C: 回到线性臂, E_D: 系统输出
+    E_in_from_CW  = squeeze(prop_output_CW.fields(:,:,end));  % [Nt, 4]: [0, λ₁ʸ, 0, λ₂ʸ]
+    E_in_from_CCW = squeeze(prop_output_CCW.fields(:,:,end)); % [Nt, 4]: [0, λ₁ʸ, 0, λ₂ʸ]
+
+    % 提取 y 偏振分量 (慢轴)
+    E_A_lambda1y = E_in_from_CW(:, 2);  % CW 环的 λ₁ʸ (A)
+    E_B_lambda1y = E_in_from_CCW(:, 2); % CCW 环的 λ₁ʸ (B)
+    E_A_lambda2y = E_in_from_CW(:, 4);  % CW 环的 λ₂ʸ (A)
+    E_B_lambda2y = E_in_from_CCW(:, 4); % CCW 环的 λ₂ʸ (B)
+
+    % 耦合器系数
+    Coupler_Matrix = [sqrt(1-OC),  1j*sqrt(OC); ... % 端口 A -> C (回到线性臂) / B -> C
+                     1j*sqrt(OC),  sqrt(1-OC)];     % 端口 A -> D (系统输出) / B -> D
+
+    % --- 耦合 λ₁ʸ ---
+    % E_C_lambda1y: 回到线性臂的 λ₁ʸ； E_D_lambda1y: 系统的输出 λ₁ʸ
+    E_C_lambda1y = r1 * E_B_lambda1y + r2 * E_A_lambda1y; % 回到线性臂
+    E_D_lambda1y = r2 * E_B_lambda1y + r1 * E_A_lambda1y; % 系统输出
+    
+    % --- 耦合 λ₂ʸ ---
+    E_C_lambda2y = r1 * E_B_lambda2y + r2 * E_A_lambda2y;
+    E_D_lambda2y = r2 * E_B_lambda2y + r1 * E_A_lambda2y; 
+
+    % --- 构建下一个往返的输入场 (input_pulse) ---
+    % 线性臂是双偏振，但它只接收 y-pol 的能量，因此 x-pol 仍为零
+    input_pulse.fields = [
+        zeros(Nt, 1), E_C_lambda1y, ... % λ₁
+        zeros(Nt, 1), E_C_lambda2y  ... % λ₂
+    ];
+   
+    % 更新给 prop_output，用于能量计算等
+    prop_output.fields = input_pulse.fields;
+
+    % 系统输出是两个波长 y-pol 的总和
+    output_field(:, 1, rt_num) = E_D_lambda1y + E_D_lambda2y;
+    
+    % % 检查两波长是否足够相干
+    % coherence_lambda12 = abs(trapz(E_D_lambda1y.*conj(E_D_lambda2y))*dt).^2 / ...
+    %     (trapz(abs(E_D_lambda1y).^2)*dt * trapz(abs(E_D_lambda2y).^2)*dt);
+    % fprintf('λ₁-λ₂ 相干性: %.3f\n', coherence_lambda12);
+
+    % ---------------------------------------------------------------------
+    % 关闭所有旧的详细演化图
+    all_figs = findall(0, 'Type', 'figure');
+    valid_figs = all_figs(isgraphics(all_figs, 'figure'));  % 过滤有效句柄
+
+    if ~isempty(valid_figs)
+        figs_to_close = valid_figs(~ismember({valid_figs.Name}, {'Convergence check'}));
+        close(figs_to_close);
+    end
+
+    % -----------------------------------------------------------------
+    % 主输出端口输出场的能量
+    output_energy(rt_num) = trapz(abs(output_field(:,:,rt_num)).^2)*prop_output.dt/1e3; % 能量（nj)
+    % 如果能量停止变化，锁模结束！
+    % if rt_num ~= 1
+    %     close(fig); % 关闭上一图，绘制新图
+    % end 
+    warning('off')
+    output_field(:,:,rt_num) = pulse_tracker(output_field(:,:,rt_num));
+    warning('on');
+    [converged_yes,fig] = check_convergence( output_energy,output_field(:,:,rt_num),f,t,tol_convergence,true );
+    
+    % ---------------------------------------------------------------------
+    % 显示每次往返的运行时间
+    t_iteration_end = toc(t_iteration_start);
+    t_iteration_spent = datevec(t_iteration_end/3600/24);
+    fprintf(': %1u:%2u:%3.1f\n',t_iteration_spent(4),t_iteration_spent(5),t_iteration_spent(6));
+    
+    % ---------------------------------------------------------------------
+    % 根据 "time_delay "更新重复率
+    % 脉冲相对于运动帧会发生时间上的偏移。
+    % 因为我在代码中实现了脉冲居中功能，我可以使用每次往返中的 "time_delay "信息进行校准，从而得到实际的重复率。
+    % gain_rate_eqn.t_rep = t_rep + time_delay*1e-12;
+    
+    % ------------------------ FROG、沿光纤的光场信息 --------------------------------
+    % if converged_yes || rt_num == max_rt || mod(rt_num, 10) == 0
+        % % =================================================================================
+        % --- 详细演化图分析 (线性臂) ---
+
+        current_field = field{rt_num}; % (Nt, 4, N_saved_points)
+
+        % **1. 分模式 (λ₁ˣ, λ₁ʸ, λ₂ˣ, λ₂ʸ) 详细演化图**
+        field_labels = {'Lambda1_X_pol', 'Lambda1_Y_pol', 'Lambda2_X_pol', 'Lambda2_Y_pol'};
+        for i = [2, 4]
+            % 提取单个模式 (Nt, 1, N_saved_points)
+            single_mode_field = current_field(:, i, :);
+            % 传入单个模式，此时 analyze_fields 中的 length(midx) = 1，将绘制详细图
+            h_fig = func.analyze_fields1(t,f,single_mode_field,saved_z{rt_num},splice_z,1);
+            % 命名图窗
+            if ~isempty(h_fig)
+                set(h_fig(1), 'Name', sprintf('RT %d: %s - Detail', rt_num, field_labels{i}));
+                set(h_fig(2), 'Name', sprintf('RT %d: %s - Evolution', rt_num, field_labels{i}));
+            end
+        end
+
+        % **2. 分波长 (λ₁总场, λ₂总场) 详细演化图**
+        % 提取 λ₁ 总场: λ₁ˣ + λ₁ʸ (Nt, 1, N_saved_points)
+        lambda1_fields = current_field(:, [1, 2], :);
+        func.analyze_fields1(t,f,lambda1_fields,saved_z{rt_num},splice_z, sprintf('Lambda1 Total'));
+       
+
+        % 提取 λ₂ 总场: λ₂ˣ + λ₂ʸ (Nt, 1, N_saved_points)
+        lambda2_fields = current_field(:, [3, 4], :); 
+        func.analyze_fields1(t,f,lambda2_fields,saved_z{rt_num},splice_z, sprintf('Lambda2 Total'));
+       
+
+        % **3. 总光场 (所有 4 个分量叠加) 详细演化图**
+        func.analyze_fields1(t,f,current_field,saved_z{rt_num},splice_z, sprintf('Total Field ALL'));
+
+        % =================================================================================
+        % --- 详细演化图分析 (CW 环形臂) ---
+        current_field_CW = field_CW{rt_num}; 
+        h_fig_cw = func.analyze_fields1(t, f, current_field_CW, saved_CW{rt_num}, splice_z1, 'CW Total Field');
+        if ~isempty(h_fig_cw)
+            set(h_fig_cw(1), 'Name', sprintf('RT %d: CW Total - Detail', rt_num));
+            set(h_fig_cw(2), 'Name', sprintf('RT %d: CW Total - Evolution', rt_num));
+        end
+
+        % --- 详细演化图分析 (CCW 环形臂) ---
+        current_field_CCW = field_CCW{rt_num}; 
+        h_fig_ccw = func.analyze_fields1(t, f, current_field_CCW, saved_CCW{rt_num}, splice_z2, 'CCW Total Field');
+        if ~isempty(h_fig_ccw)
+            set(h_fig_ccw(1), 'Name', sprintf('RT %d: CCW Total - Detail', rt_num));
+            set(h_fig_ccw(2), 'Name', sprintf('RT %d: CCW Total - Evolution', rt_num));
+        end
+    % ---------------------------------------------------------------------
+    % % Break if converged
+    % if converged_yes
+    %     cprintf('blue','The field has converged!\n');
+    %     break;
+    % end
+    % % Break if pulse dies
+    % if output_energy(rt_num) < 0.001 % 小于 0.001 nJ
+    %     disp('The pulse dies.');
+    %     pulse_survives = false;
+    %     break;
+    % end
+end
+final_E_D_lambda1y = E_D_lambda1y;
+final_E_D_lambda2y = E_D_lambda2y; 
+%% 完成模拟并保存数据
+% 清除数据中的缩减部分
+field = field(1:rt_num);
+output_field = output_field(:,:,1:rt_num);
+energy = output_energy(arrayfun(@any,output_energy)); 
+
+% close(fig,fig_filter,fig_evolution);
+
+%% Compress the pulse 压缩脉冲
+%% 孤子分子总场分析
+fprintf('--- 总输出场 (lambda_1^y + lambda_2^y) 分析 ---\n');
+[Strehl_ratio_total,dechirped_FWHM_total,transform_limited_FWHM_total,peak_power_total,fig_total_analysis] = ...
+    analyze_field( t,f,output_field(:,:,end),'Treacy-t',pi/6,1e-3/600,true );
+if exist('fig_total_analysis','var') && ~isempty(fig_total_analysis)
+    set(fig_total_analysis(1), 'Name', '总场分析 - 场和谱');
+    set(fig_total_analysis(2), 'Name', '总场分析 - 压缩');
+end
+% 
+% %% 单波长分量分析
+% % 这里的 E_D_lambda1y 和 E_D_lambda2y 应该在循环结束后，从最后一次往返的耦合步骤中获取。
+% % 如果变量未保存，您需要重新计算或在循环中保存它们。
+% % 假设您在循环结束时可以访问 E_D_lambda1y 和 E_D_lambda2y
+% if exist('E_D_lambda1y','var') && exist('E_D_lambda2y','var')
+%     % --- λ₁^y 分量分析 ---
+%     fprintf('--- lambda_1^y 分量分析 ---\n');
+%     [Strehl_ratio1,dechirped_FWHM1,transform_limited_FWHM1,peak_power1,fig1_analysis] = ...
+%         analyze_field( t,f,final_E_D_lambda1y,'Treacy-t',pi/6,1e-3/600,true );
+%     if exist('fig1_analysis','var') && ~isempty(fig1_analysis)
+%         set(fig1_analysis(1), 'Name', 'Lambda1y 分析 - 场和谱');
+%         set(fig1_analysis(2), 'Name', 'Lambda1y 分析 - 压缩');
+%     end
+% 
+%     % --- λ₂^y 分量分析 ---
+%     fprintf('--- lambda_2^y 分量分析 ---\n');
+%     [Strehl_ratio2,dechirped_FWHM2,transform_limited_FWHM2,peak_power2,fig2_analysis] = ...
+%         analyze_field( t,f,final_E_D_lambda2y,'Treacy-t',pi/6,1e-3/600,true );
+%     if exist('fig2_analysis','var') && ~isempty(fig2_analysis)
+%         set(fig2_analysis(1), 'Name', 'Lambda2y 分析 - 场和谱');
+%         set(fig2_analysis(2), 'Name', 'Lambda2y 分析 - 压缩');
+%     end
+% end
+% [Strehl_ratio,dechirped_FWHM,transform_limited_FWHM,peak_power] = analyze_field( t,f,output_field(:,:,end),'Treacy-t',pi/6,1e-3/600,true );
